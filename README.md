@@ -10,6 +10,8 @@ Thank you to everyone at Johns Hopkins University Center for Systems Science and
 
 The original data can be found at the [JHU CSSE's Data Repository](https://github.com/CSSEGISandData/COVID-19).
 
+Additionally, to those at CA.gov, who grant open access to raw data I used in my California-specific analysis
+
 ---
 ## Disclaimer & Terms of Use
 
