@@ -1,0 +1,384 @@
+---
+title: "COVD-19 Data Analysis"
+author: "Francesca Iova"
+date: "2025-08-27"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+### 1. Load libraries and read in data
+```{r library and data}
+#Load packages
+library(tidyverse)
+library(lubridate)
+
+#Note: we did not use these in class but I needed them for my own analysis
+library(rvest)
+library(usmap) 
+
+#Read in COVID-19 data
+us.cases <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv")
+
+global.cases <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv")
+
+us.deaths <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv")
+
+global.deaths <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv")
+```
+
+```{r see data}
+#I like to see the data I'm working with first
+us.cases
+us.deaths
+global.cases
+global.deaths
+```
+
+### 2. Tidy Data
+
+```{r tidy global}
+#First, we need to pivot global.cases
+global.cases <- global.cases %>%
+  pivot_longer(cols = -c(`Province/State`, #condense all but these cols from global.deaths (this way is more effective since there are SO many date cols)
+                         `Country/Region`,#note we need to use backticks here to escape the slash since it's non-standard in R
+                         Lat, Long),
+               names_to = "date", #the col names (the date) will go under new col called "date"
+               values_to = "cases") %>% #the col values (# of reported deaths) will go into new col "cases"
+  select(-c(Lat, Long)) #remove unneeded cols
+
+global.cases
+
+#Now, using the same method we'll pivot global.deaths
+global.deaths <- global.deaths %>%
+  pivot_longer(cols = -c(`Province/State`,
+                         `Country/Region`,Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>% 
+  select(-c(Lat, Long)) 
+
+global.deaths
+```
+
+```{r combine global}
+#Combining global cases & deaths into "global"
+global <- global.cases %>%
+  full_join(global.deaths) %>% #join global.cases & global.deaths
+  rename(Country_Region = 'Country/Region', #getting rid of the slashes
+         Province_State = 'Province/State') %>%
+  mutate(date = mdy(date)) %>% #change date from dbl to date type
+  filter(cases > 0) #filter out rows with 0 cases
+
+global
+summary(global)
+```
+```{r tidy US}
+#Tidy up US cases using pivot_longer
+us.cases <- us.cases %>%
+  pivot_longer(cols= -(UID:Combined_Key), #Here I'm selecting all cols EXCEPT UID thru Combined_Key
+               names_to = "date",
+               values_to = "cases") %>%
+  select(FIPS:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+us.cases
+
+#Tidy up US deaths using the same method
+us.deaths <- us.deaths %>%
+  pivot_longer(cols= -(UID:Population), #Here I'm selecting all cols EXCEPT UID thru Combined_Key
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(FIPS:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+us.deaths
+```
+```{r combine us}
+#Combining US cases & deaths into "us"
+us <- us.cases %>%
+  full_join(us.deaths)
+
+us
+```
+
+```{r unite global}
+#We need to make the global(more complex) dataset mirror the US(simpler) dataset, so we can compare them
+global <- global %>%
+  unite("Combined_Key", #combine Province_State & Country_region to Combined_Key
+        c(Province_State, Country_Region),
+        sep = ", ", #they'll be separated by a comma & space
+        na.rm = TRUE,
+        remove = FALSE)
+
+#And we want to add global population info, which is found in a diff dataset I'll load in here
+uid <- read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv") %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2)) #remove unnecessary cols
+
+#Join the uid & global datasets to add a pop col
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>% #left_join to join the datasets on the left one's (global) terms; tell it how to join via "by ="
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+
+global
+```
+
+### 3. Visualize Data
+
+```{r us stats}
+us.by.state <- us %>%
+  group_by(Province_State, Country_Region, date) %>% #group the dataset by state
+  summarize(cases = sum(cases), 
+            deaths = sum(deaths), 
+            Population = sum(Population)) %>% #summarize the total cases, deaths, & pop by state
+  mutate(deaths_per_mill = deaths*1000000 / Population) %>% #add deaths_per_mill col
+  select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population) %>% #select desired cols
+  ungroup()
+
+us.by.state
+
+#I also want the US totals by date using the same method
+us.totals <- us.by.state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+us.totals
+```
+
+```{r visualize us}
+#Let's plot the US totals!
+us.totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() + #scale the y axis logarithmically
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+```
+
+```{r ca}
+#I'll look at CA specifically
+us.by.state %>%
+  filter(Province_State == "California") %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() + #scale the y axis logarithmically
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in CA", y = NULL)
+```
+```{r max}
+#Let's see the date with the most COVID related deaths
+max(us.totals$date)
+max(us.totals$deaths)
+```
+
+### 4. Analyze Data
+
+```{r transform}
+#We'll add new variables conveying the new cases/deaths each day
+us.by.state <- us.by.state %>%
+  mutate(new_cases = cases - lag(cases),#lag() shifts the time (here that means date) one back (source: stack overflow)
+         new_deaths = deaths - lag(deaths))
+
+us.totals <- us.totals %>%
+  arrange(date) %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+us.by.state
+us.totals
+```
+```{r new us}
+#Let's graph the new cases across the US
+us.totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = deaths, color = "new_deaths")) +
+  geom_point(aes(y = deaths, color = "new_deaths")) +
+  scale_y_log10() + 
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "New cases of COVID19 in the US", y = NULL)
+```
+```{r new ca}
+#and now CA specifically
+us.by.state %>%
+  filter(Province_State == "California") %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = deaths, color = "new_deaths")) +
+  geom_point(aes(y = deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "New COVID19 cases in CA", y = NULL)
+```
+
+```{r transform2}
+#Here, I'll add columns calculating deaths per thousand by state
+us.state.totals <- us.by.state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths),
+            cases = max(cases),
+            population = max(Population),
+            cases_per_thou = 1000 * cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>%
+  filter(cases > 0, population > 0)
+
+us.state.totals %>%
+  slice_min(deaths_per_thou, n = 10) %>%#this will tell me the 10 states with the least deaths per thousand
+  select(deaths_per_thou, cases_per_thou, everything())
+  
+us.state.totals %>%
+  slice_max(deaths_per_thou, n = 10) %>% #and conversely, the 10 states with the most deaths per thousand
+  select(deaths_per_thou, cases_per_thou, everything())
+```
+
+### 5. Modeling Data
+
+```{r linear mdl}
+#Let's use the linear model to see the deaths per thousand by state as a function of cases per thousand
+lmdl <- lm(deaths_per_thou ~ cases_per_thou, data = us.state.totals)
+
+summary(lmdl)
+
+#Now I'll add the linear model to the state totals data
+us.tot.w.preds <- us.state.totals %>%
+  mutate(pred = predict(lmdl))
+
+#Finally, I want t oplot this relationship
+
+us.tot.w.preds %>%
+  ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+```
+
+### 6. Bias
+
+My bias comes in further along in this project. It is that I believe the poorest communities are harmed the most in a majority of the cases where our entire nation is subject to some disaster. Of course I believe there will be anomalies, but the trend at large does not escape me, nor anyone else who finds this pattern troubling. Admittedly, the idea that the poorer are worse off in these situations has become somewhat of an assumption to me, one I try to avoid but can't completely hide from. Of course that is only 1 of the 2 factors I will consider in my further analysis, the other being population density. That comes from my BS in biology: this virus is an airborne contagion -- the more contact one has with others, the higher their odds of contracting it; and the more densely a community is populated, the harder isolation becomes.
+
+### 7. My Unique Visual & Analysis
+
+As the above material was led step-by-step in class, I want to leverage my new skills in a different direction here. As a Southern Californian, I'd like to see the spread of COVID-19 by county in my home state, the most populous and 17th most densely populated state in the US. Please note that I'm considering "US Territories" & DC as states here, since the dataset treats them as such, and it also aligns with what I believe is fair & inclusive treatment of these regions. Unfortunately, these regions are not included in the usmap package, so my currently limited R skills and I will stick with analyzing CA rather than the entirety of the US as I had originally planned.
+
+```{r CA data}
+#First, using methods learned from these class examples, I will create a CA-specific dataset grouped by counties
+CA <- us %>%
+  rename(state = Province_State,
+         county = Admin2,
+         fips = FIPS) %>% #I renamed these cols to my liking
+  filter(state == "California") %>% #single out CA
+  group_by(state, county, fips) %>% #group the dataset by county; not I need to use FIPS for the following visual
+  summarize(total_cases = sum(cases, na.rm = TRUE), 
+            total_deaths = sum(deaths, na.rm = TRUE), 
+            pop = sum(Population)) %>% #summarize the total cases, deaths, & pop by county
+  mutate(deaths_per_1k = total_deaths*1000 / pop,#add deaths_per_1k col
+         cases_per_1k = total_cases * 1000 / pop) %>% #add cases_per_1k col
+  filter(county != "Unassigned", county != "Out of CA") %>% #There are a few rows I want to eliminate since they are not valid to my analysis
+  mutate(fips = paste0(0, fips)) %>% #source for this line of code: <https://stackoverflow.com/questions/5812493/how-to-add-leading-zeros>; my visual was not computing since FIPS codes need to be 5 digits
+  select(fips, county, total_cases, total_deaths, deaths_per_1k, cases_per_1k, pop) %>% #select desired cols
+  ungroup()
+
+CA
+```
+```{r CA visual}
+plot_usmap(regions = "county", include="California", data = CA, values = "deaths_per_1k", color = "red") +
+  scale_fill_continuous(low = "white", high = "red", name = "Deaths per 1,000") +
+  theme(legend.position = "right")
+
+plot_usmap(regions = "county", include="California", data = CA, values = "cases_per_1k", color = "blue") +
+  scale_fill_continuous(low = "white", high = "blue", name = "Cases per 1,000") +
+  theme(legend.position = "right")
+```
+```{r}
+CA %>% slice_max(cases_per_1k, n = 3)
+CA %>% slice_max(deaths_per_1k, n = 3)
+```
+
+Why was Imperial County so disproportionately affected? I was honestly expecting SF, Orange, & LA to top the list of cases and deaths per capita, especially since this is an airborne pathogen and they're the most densely populated counties in all of CA. Especially LA, since it's also the most populous county in the whole US. It's also surprising to see San Bernardino, Kings, and Lassen make the list, since their densities are relatively low.
+
+I've been interested lately on the adverse effects of wealth inequality in the US, so let's start there. I found this dataset from ca.gov, and chose to use the 2022 income data, since my graph of CA earlier in this project showed a spike in 2022.
+```{r income data}
+#Load the data
+ca.median.income <- read_csv("https://data.ca.gov/dataset/d56fc70f-5566-4030-8854-1ce72c93e100/resource/49eb1f40-d50a-4dde-98ca-0450d69c4617/download/2022-income-limits.csv")
+
+ca.median.income
+```
+After reading the dataset's dictionary <https://data.ca.gov/dataset/income-limits-by-county/resource/a25962fc-8bdf-484e-afe2-73def7d01b4d>, I'll only be keeping the column I'm seeking to work with (AMI)
+
+```{r tidy income}
+#I'll eliminate the cols I'm not working with, and then join it to my CA data
+ca.median.income <- ca.median.income %>%
+  rename(county = County,
+         median_income = AMI) %>%
+  select(county, median_income)
+  
+CA <- CA %>%
+  left_join(ca.median.income, by = "county")
+
+CA
+```
+
+I also think population density for an airborne pathogen is too big a factor to ignore, so I'll add that to my CA dataset. However, I don't want to introduce a dataset with new/possibly conflicting population values, so I'll load in the area of each county instead, and calculate density myself.
+```{r pop density}
+#Load in data
+ca.county.area <- read_csv("https://cecgis-caenergy.opendata.arcgis.com/api/download/v1/items/ce721c35ab7e4e4b89ef2080b4c331f6/csv?layers=0")
+
+ca.county.area
+```
+Note that the units of measure are m^2, and it looks like the data might be a bit distorted. Since I'm only using this data to make rough, relative comparisons, it will serve my purposes here.
+
+```{r county tidy}
+#tidying up the data to only keep the area, then joining and creating a new column calculating pop density
+ca.county.area <- ca.county.area %>%
+  mutate(area = Shape__Area / 1000) %>% #converting m^2 to km^2
+  rename(fips = FIPS) %>%
+  select(fips, area)
+
+CA <- CA %>%
+  left_join(ca.county.area, by = "fips") %>%
+  mutate(pop_density = pop / area) %>%
+  select(-c(total_cases, total_deaths, area))
+
+CA
+```
+
+```{r CA visual2}
+plot_usmap(regions = "county", include="California", data = CA, values = "median_income", color = "green") +
+  scale_fill_continuous(low = "white", high = "green", name = "Median Income") +
+  theme(legend.position = "right")
+
+plot_usmap(regions = "county", include="California", data = CA, values = "pop_density", color = "black") +
+  scale_fill_continuous(low = "white", high = "black", name = "Population Density") +
+  theme(legend.position = "right")
+```
+
+Interesting graphic, let's zoom in on those numbers
+```{r ranks}
+CA %>% slice_max(pop_density, n = 10)
+CA %>% slice_max(median_income, n = 10)
+
+CA %>% slice_min(pop_density, n = 10)
+CA %>% slice_min(median_income, n = 21)
+```
+
+Well, there you have it: both population density and wealth inequality play a part -- but it looks like the richer the county, the more the population density risk is mitigated. I also think it's a sad fact that the estimated median income of 21 counties is the same and makes up the lowest bound at a median income of 80,300 USD. A few of the most densely populated counties like SF, Alameda, & San Mateo make about double the income of the poorest counties like Imperial, Kings, and Lassen, which were hit the hardest per capita. A great demonstration of this wealth disparity is LA, which has a median income of 91,100 USD, and also the 3rd highest pop density. Here, COVID also hit hard, claiming the most lives total, and had the 2nd most deaths per capita.
